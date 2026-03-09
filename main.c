@@ -1,5 +1,6 @@
 
 #include "tinytypes.h"
+#include "flow/flow.h"
 #include "vk_default.h"
 #include "vk.h"
 #include <GLFW/glfw3.h>
@@ -15,6 +16,10 @@
 #include <vulkan/vulkan_core.h>
 #include "stb/stb_perlin.h"
 #include "voxel.h"
+#define DMON_IMPL
+#include "external/dmon/dmon.h"
+static bool voxel_debug     = false;
+static bool take_screenshot = true;
 #define VALIDATION false
 #define KB(x) ((x) * 1024ULL)
 #define MB(x) ((x) * 1024ULL * 1024ULL)
@@ -37,60 +42,11 @@ static const VoxelType terrain_voxels[] = {
     STONE, GRASS, DIRT, SAND, GRAVEL, CLAY,
 
 };
-#define DMON_IMPL
-#include "external/dmon/dmon.h"
-static bool voxel_debug     = true;
-static bool take_screenshot = true;
 typedef struct
 {
     float pos[3];
     float uv[2];
 } Vertex;
-typedef enum PipelineID
-{
-    PIPELINE_FULLSCREEN,
-    PIPELINE_POSTPROCESS,
-    PIPELINE_TRIANGLE_TEST,
-    PIPELINE_SMAA_EDGE,
-    PIPELINE_SMAA_WEIGHT,
-    PIPELINE_SMAA_BLEND,
-
-    PIPELINE_COUNT
-} PipelineID;
-
-typedef enum PipelineType
-{
-    PIPELINE_TYPE_GRAPHICS,
-    PIPELINE_TYPE_COMPUTE
-} PipelineType;
-
-typedef struct PipelineEntry
-{
-    PipelineType type;
-
-    union
-    {
-        GraphicsPipelineConfig graphics;
-
-        struct
-        {
-            const char* path;
-        } compute;
-    };
-
-    bool dirty;
-
-} PipelineEntry;
-typedef struct RendererPipelines
-{
-    VkPipeline    pipelines[PIPELINE_COUNT];
-    PipelineEntry entries[PIPELINE_COUNT];
-
-} RendererPipelines;
-
-
-static RendererPipelines render_pipelines;
-static uint32_t          current_pipeline_build;
 
 static void spv_to_slang(const char* spv, char* out)
 {
@@ -135,9 +91,66 @@ static bool shader_change_matches_spv(const char* changed, const char* spv)
     return strcmp(changed_name, slang_name) == 0;
 }
 
+
+
+typedef enum PipelineID
+{
+    PIPELINE_FULLSCREEN,
+    PIPELINE_POSTPROCESS,
+    PIPELINE_TRIANGLE_TEST,
+    PIPELINE_SMAA_EDGE,
+    PIPELINE_SMAA_WEIGHT,
+    PIPELINE_SMAA_BLEND,
+
+    PIPELINE_COUNT
+} PipelineID;
+
+typedef enum PipelineType
+{
+    PIPELINE_TYPE_GRAPHICS,
+    PIPELINE_TYPE_COMPUTE
+} PipelineType;
+
+typedef struct PipelineEntry
+{
+    PipelineType type;
+
+    union
+    {
+        GraphicsPipelineConfig graphics;
+
+        struct
+        {
+            const char* path;
+        } compute;
+    };
+
+    bool dirty;
+
+} PipelineEntry;
+
+typedef struct RendererPipelines
+{
+    VkPipeline    pipelines[PIPELINE_COUNT];
+    PipelineEntry entries[PIPELINE_COUNT];
+
+} RendererPipelines;
+
+static RendererPipelines render_pipelines;
+static uint32_t current_pipeline_build;
+
+/* --------------------------------------------------------- */
+
 VkPipeline create_graphics_pipeline_cache(Renderer* r, GraphicsPipelineConfig* cfg)
 {
-    u32 id = current_pipeline_build;
+    u32 id;
+    flow_id_pool_create_id(&pipeline_id_pool, &id);
+
+    if(id >= PIPELINE_COUNT)
+    {
+        printf("Pipeline overflow\n");
+        return VK_NULL_HANDLE;
+    }
 
     PipelineEntry* e = &render_pipelines.entries[id];
 
@@ -153,10 +166,17 @@ VkPipeline create_graphics_pipeline_cache(Renderer* r, GraphicsPipelineConfig* c
 
     return p;
 }
+
 VkPipeline create_compute_pipeline_cache(Renderer* r, const char* path)
 {
+    u32 id;
+    flow_id_pool_create_id(&pipeline_id_pool, &id);
 
-    u32 id = current_pipeline_build;
+    if(id >= PIPELINE_COUNT)
+    {
+        printf("Pipeline overflow\n");
+        return VK_NULL_HANDLE;
+    }
 
     PipelineEntry* e = &render_pipelines.entries[id];
 
@@ -173,6 +193,8 @@ VkPipeline create_compute_pipeline_cache(Renderer* r, const char* path)
     return p;
 }
 
+/* --------------------------------------------------------- */
+
 void mark_pipelines_dirty(const char* changed)
 {
     for(int i = 0; i < PIPELINE_COUNT; i++)
@@ -186,8 +208,9 @@ void mark_pipelines_dirty(const char* changed)
 
         if(e->type == PIPELINE_TYPE_GRAPHICS)
         {
-            matches = shader_change_matches_spv(changed, e->graphics.vert_path)
-                      || shader_change_matches_spv(changed, e->graphics.frag_path);
+            matches =
+                shader_change_matches_spv(changed, e->graphics.vert_path) ||
+                shader_change_matches_spv(changed, e->graphics.frag_path);
         }
         else
         {
@@ -199,6 +222,7 @@ void mark_pipelines_dirty(const char* changed)
     }
 }
 
+/* --------------------------------------------------------- */
 
 void rebuild_dirty_pipelines(Renderer* r)
 {
@@ -226,17 +250,18 @@ void rebuild_dirty_pipelines(Renderer* r)
 
         if(e->type == PIPELINE_TYPE_GRAPHICS)
         {
-            render_pipelines.pipelines[i] = create_graphics_pipeline(r, &e->graphics);
+            render_pipelines.pipelines[i] =
+                create_graphics_pipeline(r, &e->graphics);
         }
         else
         {
-            render_pipelines.pipelines[i] = create_compute_pipeline(r, e->compute.path);
+            render_pipelines.pipelines[i] =
+                create_compute_pipeline(r, e->compute.path);
         }
 
         printf("Pipeline %d hot reloaded\n", i);
     }
 }
-
 
 static volatile bool shader_changed = false;
 static char          changed_shader[256];
@@ -802,17 +827,6 @@ int main()
         renderer_create(&renderer, &desc);
         init_block_textures(&renderer);
         {
-            GraphicsPipelineConfig cfg = pipeline_config_default();
-            cfg.vert_path              = "compiledshaders/triangle.vert.spv";
-            cfg.frag_path              = "compiledshaders/triangle.frag.spv";
-            cfg.color_attachment_count = 1;
-            cfg.color_formats          = &renderer.hdr_color[1].format;
-            cfg.depth_format           = renderer.depth[1].format;
-            cfg.polygon_mode           = VK_POLYGON_MODE_FILL;
-
-            render_pipelines.pipelines[PIPELINE_TRIANGLE_TEST] = create_graphics_pipeline(&renderer, &cfg);
-        }
-        {
             GraphicsPipelineConfig cfg                      = pipeline_config_default();
             cfg.vert_path                                   = "compiledshaders/minimal_proc.vert.spv";
             cfg.frag_path                                   = "compiledshaders/minimal_proc.frag.spv";
@@ -824,6 +838,17 @@ int main()
         }
         render_pipelines.pipelines[PIPELINE_POSTPROCESS] =
             create_compute_pipeline_cache(&renderer, "compiledshaders/postprocess.comp.spv");
+        {
+            GraphicsPipelineConfig cfg = pipeline_config_default();
+            cfg.vert_path              = "compiledshaders/triangle.vert.spv";
+            cfg.frag_path              = "compiledshaders/triangle.frag.spv";
+            cfg.color_attachment_count = 1;
+            cfg.color_formats          = &renderer.hdr_color[1].format;
+            cfg.depth_format           = renderer.depth[1].format;
+            cfg.polygon_mode           = VK_POLYGON_MODE_FILL;
+
+            render_pipelines.pipelines[PIPELINE_TRIANGLE_TEST] = create_graphics_pipeline_cache(&renderer, &cfg);
+        }
         {
             GraphicsPipelineConfig cfg = pipeline_config_default();
             cfg.vert_path              = "compiledshaders/smaa_edge.vert.spv";

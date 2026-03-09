@@ -14,6 +14,8 @@
 #include "external/smaa/Textures/AreaTex.h"
 #include "external/smaa/Textures/SearchTex.h"
 
+flow_id_pool pipeline_id_pool = {0};
+
 bool is_instance_extension_supported(const char* extension_name)
 {
     uint32_t extensionCount = 0;
@@ -1143,9 +1145,10 @@ void renderer_create(Renderer* r, RendererDesc* desc)
 
 
     flow_id_pool_init(&r->texture_pool, MAX_BINDLESS_TEXTURES);
+
     flow_id_pool_init(&r->sampler_pool, MAX_BINDLESS_SAMPLERS);
 
-
+    flow_id_pool_init(&pipeline_id_pool , MAX_PIPELINES);
     vk_cmd_create_pool(r->device, r->graphics_queue_index, true, false, &r->one_time_gfx_pool);
 
     int fb_w, fb_h;

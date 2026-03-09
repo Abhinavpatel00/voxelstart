@@ -20,13 +20,12 @@
 #include "tinytypes.h"
 
 #include "external/cimgui/cimgui.h"
-
+#include "helpers.h"
 #include "external/cimgui/cimgui_impl.h"
 #define internal static
 #define global static
 #define local_persist static
 
-#include "helpers.h"
 #include "offset_allocator.h"
 
 #include "external/stb/stb_image.h"
@@ -57,8 +56,9 @@ typedef struct VkPhysicalDeviceShaderNonSemanticInfoFeaturesKHR
 #define MAX_MIPS 16
 #define MAX_SWAPCHAIN_IMAGES 8
 
-#define MAX_BINDLESS_TEXTURES 65536
+#define MAX_PIPELINES 256
 #define MAX_BINDLESS_SAMPLERS 256
+#define MAX_BINDLESS_TEXTURES 65536
 #define MAX_BINDLESS_STORAGE_BUFFERS 65536
 #define MAX_BINDLESS_UNIFORM_BUFFERS 16384
 #define MAX_BINDLESS_STORAGE_IMAGES 16384
@@ -68,6 +68,7 @@ typedef struct VkPhysicalDeviceShaderNonSemanticInfoFeaturesKHR
 #define MAX_BINDLESS_TRANSFORMS 65536
 
 
+extern flow_id_pool pipeline_id_pool;
 typedef uint32_t TextureID;
 typedef struct
 {
