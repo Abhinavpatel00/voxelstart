@@ -122,9 +122,11 @@ typedef struct
     uint32_t smaa_weight;
     uint32_t smaa_blend;
     uint32_t beam;
+    uint32_t sky;
 } EnginePipelines;
 
 static EnginePipelines pipelines;
+static bool            upload_once_done = false;
 
 
 static const VoxelType terrain_voxels[] = {VOXEL_STONE, VOXEL_GRASS
@@ -383,6 +385,19 @@ int main()
         {
         }
     }
+    // Sky pipeline – fullscreen quad, no depth test/write
+    {
+        GraphicsPipelineConfig cfg = pipeline_config_default();
+        cfg.vert_path              = "compiledshaders/sky.vert.spv";
+        cfg.frag_path              = "compiledshaders/sky.frag.spv";
+        cfg.color_attachment_count = 1;
+        cfg.color_formats          = &renderer.hdr_color[1].format;
+        cfg.depth_format           = renderer.depth[1].format;
+        cfg.depth_test_enable      = false;
+        cfg.depth_write_enable     = false;
+        cfg.topology               = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        pipelines.sky              = pipeline_create_graphics(&renderer, &cfg);
+    }
     /*
     CPU
  │
@@ -605,6 +620,17 @@ GPU pool (device local)
 
     );
 
+    PUSH_CONSTANT(SkyPush,
+        float inv_proj[4][4];
+        float basis_right[4];
+        float basis_up[4];
+        float basis_back[4];
+        float time;
+        float cirrus;
+        float cumulus;
+        float pad0;
+    );
+
     dmon_init();
     dmon_watch("shaders", watch_cb, DMON_WATCHFLAGS_RECURSIVE, NULL);
 
@@ -737,8 +763,10 @@ GPU pool (device local)
         TracyCZoneEnd(imgui_zone);
 
 
-        RUN_ONCE
+        if(!upload_once_done)
         {
+            upload_once_done = true;
+
             {
                 VkBufferCopy copy = {.srcOffset = cpu_faces.offset,
                                      .dstOffset = gpu_faces.offset,
@@ -759,6 +787,52 @@ GPU pool (device local)
             GPU_SCOPE(frame_prof, cmd, "Main Pass", VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT)
             {
 
+
+                // ── Sky pass ──────────────────────────────────────────
+                {
+                    vec3 forward = {
+                        cosf(cam.pitch) * sinf(cam.yaw),
+                        sinf(cam.pitch),
+                        -cosf(cam.pitch) * cosf(cam.yaw),
+                    };
+                    glm_vec3_normalize(forward);
+
+                    vec3 world_up = {0.0f, 1.0f, 0.0f};
+                    vec3 right    = {0.0f};
+                    vec3 up       = {0.0f};
+                    glm_vec3_cross(forward, world_up, right);
+                    glm_vec3_normalize(right);
+                    glm_vec3_cross(right, forward, up);
+
+                    float aspect = (float)renderer.swapchain.extent.width / (float)renderer.swapchain.extent.height;
+                    mat4  proj   = GLM_MAT4_IDENTITY_INIT;
+                    mat4  inv_proj;
+                    camera_build_proj_reverse_z_infinite(proj, &cam, aspect);
+                    proj[1][1] *= -1.0f;
+                    glm_mat4_inv(proj, inv_proj);
+
+                    SkyPush sky_push = {0};
+                    memcpy(sky_push.inv_proj, inv_proj, sizeof(sky_push.inv_proj));
+                    sky_push.basis_right[0] = right[0];
+                    sky_push.basis_right[1] = right[1];
+                    sky_push.basis_right[2] = right[2];
+                    sky_push.basis_up[0]    = up[0];
+                    sky_push.basis_up[1]    = up[1];
+                    sky_push.basis_up[2]    = up[2];
+                    sky_push.basis_back[0]  = -forward[0];
+                    sky_push.basis_back[1]  = -forward[1];
+                    sky_push.basis_back[2]  = -forward[2];
+sky_push.time = (float)glfwGetTime() * 0.2f;
+                    sky_push.cirrus         = 0.4f;
+                    sky_push.cumulus        = 0.8f;
+
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                      g_render_pipelines.pipelines[pipelines.sky]);
+                    vk_cmd_set_viewport_scissor(cmd, renderer.swapchain.extent);
+                    vkCmdPushConstants(cmd, renderer.bindless_system.pipeline_layout,
+                                       VK_SHADER_STAGE_ALL, 0, sizeof(SkyPush), &sky_push);
+                    vkCmdDraw(cmd, 4, 1, 0, 0);
+                }
 
                 static int prev_space = GLFW_RELEASE;
 
@@ -1029,10 +1103,7 @@ GPU pool (device local)
 
     printf(" renderer size is %zu", sizeof(Renderer));
     printf("Push size = %zu\n", sizeof(Push));
-    printf("Push size = %zu\n", alignof(Push));
     printf("view_proj offset = %zu\n", offsetof(Push, view_proj));
-    printf(" pushis %zu    ", alignof(Push));
- PRINT_STRUCT(Push);
 
     PRINT_FIELD(Push, face_ptr);
     PRINT_FIELD(Push, mat_ptr);
